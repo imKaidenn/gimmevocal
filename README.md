@@ -23,7 +23,8 @@
 - ⚙️ **Swappable models** — small model by default; point Settings at a bigger model for higher accuracy.
 - 🛡️ **Safe** — auto-stops when you switch notes, releases the mic on disable.
 
-> First time you click the mic, GimmeVocal downloads the voice model once (~40 MB) into the plugin folder. After that it's 100% offline.
+> First time you click the mic, GimmeVocal downloads the voice model once into the plugin folder. After that it's 100% offline.
+> Default is the small English model (~40 MB, fast). For better accuracy, switch to **lgraph** (~128 MB) in Settings — see “Want better accuracy?” below.
 
 ---
 
@@ -50,10 +51,14 @@
 3. Talk — text lands at your cursor. Click the mic again to stop. *(Bind a hotkey to “GimmeVocal: Toggle dictation” if you like.)*
 
 ## 🎯 Want better accuracy?
-The default small model is fast but basic. For higher accuracy:
-1. **Settings → GimmeVocal → Voice model URL** → paste a larger Vosk model `.tar.gz` (e.g. `vosk-model-en-us-0.22-lgraph`, ~128 MB).
+The default small model is fast but basic. For noticeably better accuracy, use the **lgraph** model (~128 MB):
+1. **Settings → GimmeVocal → Voice model URL** → paste:
+   ```
+   https://github.com/imKaidenn/gimmevocal/releases/download/1.1.0/model-lgraph.tar.gz
+   ```
 2. Click **Clear & re-download**, then start dictation again.
-Browse models: <https://alphacephei.com/vosk/models>
+
+Other models (any size): <https://alphacephei.com/vosk/models> — repackage `.zip` → `.tar.gz` before use.
 
 ## 🛠️ Build from source
 ```bash

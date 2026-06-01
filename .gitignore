@@ -6,3 +6,4 @@ package-lock.json
 _modelbuild/
 model.zip
 model.tar.gz
+data.json
