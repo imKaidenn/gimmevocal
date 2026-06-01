@@ -1,0 +1,19 @@
+{
+  "name": "gimmevocal",
+  "version": "1.0.0",
+  "description": "Instant, local live dictation for Obsidian via the native Web Speech API.",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "build": "node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs"
+  },
+  "author": "imKaidenn",
+  "license": "GPL-3.0",
+  "devDependencies": {
+    "builtin-modules": "3.3.0",
+    "esbuild": "0.21.5",
+    "obsidian": "latest",
+    "typescript": "5.4.5"
+  }
+}

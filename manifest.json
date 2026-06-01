@@ -1,0 +1,14 @@
+{
+  "id": "gimmevocal",
+  "name": "GimmeVocal",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Instant, local live dictation for your notes. Just click to talk, no API keys or audio files required.",
+  "author": "imKaidenn",
+  "authorUrl": "https://github.com/imKaidenn",
+  "fundingUrl": {
+    "Buy Me a Coffee": "https://buymeacoffee.com/ridhakaiden",
+    "PayPal": "https://paypal.me/1mkaiden"
+  },
+  "isDesktopOnly": true
+}
