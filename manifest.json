@@ -1,8 +1,8 @@
 {
   "id": "gimmevocal",
   "name": "GimmeVocal",
-  "version": "1.0.0",
-  "minAppVersion": "1.4.0",
+  "version": "1.1.0",
+  "minAppVersion": "0.15.0",
   "description": "Instant, local live dictation for your notes. Just click to talk, no API keys or audio files required.",
   "author": "imKaidenn",
   "authorUrl": "https://github.com/imKaidenn",

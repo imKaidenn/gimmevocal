@@ -2,12 +2,12 @@
 
 # 🎙️ GimmeVocal
 
-**Instant, local live dictation for Obsidian. Click to talk — your words appear at the cursor in real time.**
-**No API keys. No audio files. No cloud. 100% on-device via the native Web Speech API.**
+**Offline live dictation for Obsidian. Click the mic, talk — your words appear at the cursor in real time.**
+**100% local & free — powered by [Vosk](https://alphacephei.com/vosk/) (WASM). No cloud, no API keys, no audio files saved.**
 
 ![License](https://img.shields.io/badge/license-GPL--3.0-7c3aed?style=for-the-badge)
 ![Platform](https://img.shields.io/badge/platform-Desktop-22d3ee?style=for-the-badge)
-![Version](https://img.shields.io/badge/version-1.0.0-8b5cf6?style=for-the-badge)
+![Version](https://img.shields.io/badge/version-1.1.0-8b5cf6?style=for-the-badge)
 
 [☕ Buy me a coffee](https://buymeacoffee.com/ridhakaiden) · [PayPal](https://paypal.me/1mkaiden)
 
@@ -16,56 +16,50 @@
 ---
 
 ## ✨ Features
-- 🎤 **One-click toggle** — mic ribbon icon starts/stops; **pulses red** while listening.
-- ⌨️ **Live at your cursor** — interim words preview as you speak, finalized text commits exactly where your cursor is (with a trailing space).
-- 🔔 **Clear feedback** — `Notice` popups on start/stop/errors + a **🎙️ Listening…** status-bar item.
-- 🔒 **Private & free** — nothing is recorded or uploaded; no Whisper, no API keys.
-- 🛡️ **Safe** — auto-stops when you switch notes, fully releases the mic on disable, and recovers gracefully from drop-outs.
+- 🎤 **One-click toggle** — mic ribbon icon; **pulses red** while listening.
+- ⌨️ **Live at your cursor** — words preview as you speak, finalized text commits where your cursor is (trailing space).
+- 🔒 **Fully offline** — recognition runs on-device via Vosk WASM. Nothing is recorded or uploaded.
+- 🔔 **Clear feedback** — start/stop/error notices + a **🎙️ Listening…** status-bar item.
+- ⚙️ **Swappable models** — small model by default; point Settings at a bigger model for higher accuracy.
+- 🛡️ **Safe** — auto-stops when you switch notes, releases the mic on disable.
+
+> First time you click the mic, GimmeVocal downloads the voice model once (~40 MB) into the plugin folder. After that it's 100% offline.
 
 ---
 
 ## 📥 Installation
 
 ### Option A — BRAT (recommended, auto-updates)
-1. Install the **BRAT** plugin from Obsidian Community Plugins (search “BRAT”) and enable it.
-2. Open the command palette → **BRAT: Add a beta plugin for testing**.
-3. Paste this repo URL:
-   ```
-   https://github.com/imKaidenn/gimmevocal
-   ```
-4. Choose the latest version → **Add Plugin**. BRAT installs it and keeps it updated.
-5. Go to **Settings → Community plugins** and enable **GimmeVocal**.
+1. Install **BRAT** from Community Plugins and enable it.
+2. Command palette → **BRAT: Add a beta plugin for testing**.
+3. Paste: `https://github.com/imKaidenn/gimmevocal`
+4. Add Plugin → then **Settings → Community plugins** → enable **GimmeVocal**.
 
-### Option B — Manual install
-1. Download these 3 files from the [latest Release](https://github.com/imKaidenn/gimmevocal/releases/latest):
-   - `main.js`
-   - `manifest.json`
-   - `styles.css`
-2. Create a folder in your vault:
-   ```
-   <YourVault>/.obsidian/plugins/gimmevocal/
-   ```
-3. Drag the 3 files into that folder.
-4. In Obsidian: **Settings → Community plugins**, reload, then enable **GimmeVocal**.
+### Option B — Manual
+1. From the [latest release](https://github.com/imKaidenn/gimmevocal/releases/latest), download `main.js`, `manifest.json`, `styles.css`.
+2. Put them in `<YourVault>/.obsidian/plugins/gimmevocal/`.
+3. Reload Obsidian, enable **GimmeVocal**.
+
+*(The model is fetched automatically on first use — you don't need to download it manually.)*
 
 ---
 
 ## ▶️ Usage
-1. Open a Markdown note.
-2. Click the **🎤 mic** in the left ribbon (it turns pulsing red).
-3. Allow microphone access if prompted, then talk — text lands at your cursor.
-4. Click the mic again to stop. *(Tip: bind a hotkey to “GimmeVocal: Toggle dictation”.)*
+1. Open a note, click the **🎤** ribbon icon (turns pulsing red).
+2. First run: wait for the one-time model download, then allow mic access.
+3. Talk — text lands at your cursor. Click the mic again to stop. *(Bind a hotkey to “GimmeVocal: Toggle dictation” if you like.)*
 
----
+## 🎯 Want better accuracy?
+The default small model is fast but basic. For higher accuracy:
+1. **Settings → GimmeVocal → Voice model URL** → paste a larger Vosk model `.tar.gz` (e.g. `vosk-model-en-us-0.22-lgraph`, ~128 MB).
+2. Click **Clear & re-download**, then start dictation again.
+Browse models: <https://alphacephei.com/vosk/models>
 
 ## 🛠️ Build from source
 ```bash
 npm install
 npm run build   # outputs main.js
 ```
-
-## ⚠️ Note
-Live recognition uses the speech backend exposed to Obsidian's runtime. On some builds it may be unavailable — GimmeVocal detects this and shows a clear notice instead of failing silently.
 
 ---
 

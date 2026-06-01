@@ -1,36 +1,5 @@
-import { EditorPosition, MarkdownView, Notice, Plugin } from "obsidian";
-
-/**
- * Minimal typings for the native Web Speech API (absent from Obsidian's TS libs).
- * Named "*Like" so they never clash with lib.dom's own SpeechRecognition types.
- */
-type SRResultLike = { isFinal: boolean; 0: { transcript: string } };
-interface SREvent extends Event {
-  resultIndex: number;
-  results: { length: number; [i: number]: SRResultLike };
-}
-interface SRErrorEvent extends Event { error: string }
-interface SpeechRecognitionLike extends EventTarget {
-  lang: string;
-  continuous: boolean;
-  interimResults: boolean;
-  maxAlternatives: number;
-  start(): void;
-  stop(): void;
-  abort(): void;
-  onresult: ((e: SREvent) => void) | null;
-  onerror: ((e: SRErrorEvent) => void) | null;
-  onend: (() => void) | null;
-}
-type SRConstructor = new () => SpeechRecognitionLike;
-
-function getSpeechRecognition(): SRConstructor | null {
-  const w = window as unknown as {
-    SpeechRecognition?: SRConstructor;
-    webkitSpeechRecognition?: SRConstructor;
-  };
-  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
-}
+import { App, EditorPosition, MarkdownView, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { createModel, type Model } from "vosk-browser";
 
 /** Position you'd land on after inserting `text` at `pos` (handles newlines). */
 function advance(pos: EditorPosition, text: string): EditorPosition {
@@ -39,29 +8,49 @@ function advance(pos: EditorPosition, text: string): EditorPosition {
   return { line: pos.line + lines.length - 1, ch: lines[lines.length - 1].length };
 }
 
+const MODEL_FILE = "model.tar.gz";
+const SAMPLE_RATE = 16000;
+
+// Default: small English model (fast, ~40 MB). Hosted on the plugin's own release.
+const SMALL_MODEL_URL = "https://github.com/imKaidenn/gimmevocal/releases/download/1.1.0/model.tar.gz";
+
+interface GimmeVocalSettings {
+  modelUrl: string;
+}
+const DEFAULT_SETTINGS: GimmeVocalSettings = { modelUrl: SMALL_MODEL_URL };
+
 export default class GimmeVocalPlugin extends Plugin {
-  private recognition: SpeechRecognitionLike | null = null;
+  settings: GimmeVocalSettings = { ...DEFAULT_SETTINGS };
+
   private isListening = false;
-  /** Our *intent* to listen — drives auto-restart on silent engine drops. */
-  private wantListening = false;
+  private busy = false;
+
+  // Vosk
+  private model: Model | null = null;
+  private recognizer: any = null;
+  private modelUrl: string | null = null;
+
+  // Audio
+  private mediaStream: MediaStream | null = null;
+  private audioCtx: AudioContext | null = null;
+  private source: MediaStreamAudioSourceNode | null = null;
+  private processor: ScriptProcessorNode | null = null;
+
+  // UI
   private ribbonEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
-  private lang = "en-US";
 
-  // Span currently holding the live (interim) preview text.
-  private interimFrom: EditorPosition | null = null;
-  private interimTo: EditorPosition | null = null;
+  // Cursor / interim tracking
+  private anchor: EditorPosition | null = null;
+  private interimEnd: EditorPosition | null = null;
 
   async onload(): Promise<void> {
+    await this.loadSettings();
+
     this.ribbonEl = this.addRibbonIcon("mic", "GimmeVocal: start / stop dictation", () => this.toggle());
+    this.addCommand({ id: "toggle-dictation", name: "Toggle dictation", callback: () => this.toggle() });
+    this.addSettingTab(new GimmeVocalSettingTab(this.app, this));
 
-    this.addCommand({
-      id: "toggle-dictation",
-      name: "Toggle dictation",
-      callback: () => this.toggle(),
-    });
-
-    // Safety: stop the instant the user leaves the active note/pane.
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
         if (this.isListening) this.stop("GimmeVocal: stopped (switched note)");
@@ -70,145 +59,164 @@ export default class GimmeVocalPlugin extends Plugin {
   }
 
   onunload(): void {
-    this.teardown();
+    this.teardownAudio();
+    if (this.recognizer) { try { this.recognizer.remove(); } catch { /* ignore */ } this.recognizer = null; }
+    if (this.model) { try { this.model.terminate(); } catch { /* ignore */ } this.model = null; }
+    if (this.modelUrl) { try { URL.revokeObjectURL(this.modelUrl); } catch { /* ignore */ } this.modelUrl = null; }
+    this.setActive(false);
+  }
+
+  async loadSettings(): Promise<void> {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  }
+  async saveSettings(): Promise<void> {
+    await this.saveData(this.settings);
   }
 
   private toggle(): void {
     if (this.isListening) this.stop("GimmeVocal: dictation stopped");
-    else this.start();
+    else void this.start();
   }
 
-  private start(): void {
-    const SR = getSpeechRecognition();
-    if (!SR) {
-      new Notice("GimmeVocal: Speech Recognition isn't available in this build.");
-      return;
+  private get modelPath(): string {
+    return `${this.manifest.dir}/${MODEL_FILE}`;
+  }
+
+  /** Delete the cached model so a new one downloads next start (used by settings). */
+  async clearCachedModel(): Promise<void> {
+    if (this.model) { try { this.model.terminate(); } catch { /* ignore */ } this.model = null; }
+    if (this.modelUrl) { try { URL.revokeObjectURL(this.modelUrl); } catch { /* ignore */ } this.modelUrl = null; }
+    const adapter = this.app.vault.adapter;
+    if (await adapter.exists(this.modelPath)) await adapter.remove(this.modelPath);
+  }
+
+  /** Load the Vosk model (lazy). Downloads it once if not already cached locally. */
+  private async ensureModel(): Promise<Model> {
+    if (this.model) return this.model;
+    const adapter = this.app.vault.adapter;
+    let buf: ArrayBuffer;
+
+    if (await adapter.exists(this.modelPath)) {
+      buf = await adapter.readBinary(this.modelPath);
+    } else {
+      const dl = new Notice("GimmeVocal: downloading voice model (one time)… please wait.", 0);
+      try {
+        const res = await fetch(this.settings.modelUrl);
+        if (!res.ok) throw new Error(`download failed (HTTP ${res.status})`);
+        buf = await res.arrayBuffer();
+        await adapter.writeBinary(this.modelPath, buf);
+      } finally {
+        dl.hide();
+      }
+      new Notice("GimmeVocal: model ready ✅");
     }
+
+    const blob = new Blob([buf], { type: "application/gzip" });
+    this.modelUrl = URL.createObjectURL(blob);
+    this.model = await createModel(this.modelUrl);
+    return this.model;
+  }
+
+  private async start(): Promise<void> {
+    if (this.isListening || this.busy) return;
     if (!this.app.workspace.getActiveViewOfType(MarkdownView)) {
       new Notice("GimmeVocal: open a Markdown note first.");
       return;
     }
 
-    let rec: SpeechRecognitionLike;
+    this.busy = true;
     try {
-      rec = new SR();
-    } catch {
-      new Notice("GimmeVocal: could not initialise Speech Recognition.");
-      return;
-    }
+      const model = await this.ensureModel();
 
-    rec.lang = this.lang;
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.maxAlternatives = 1;
+      this.mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+        video: false,
+      });
 
-    rec.onresult = (e) => this.handleResult(e);
+      this.recognizer = new model.KaldiRecognizer(SAMPLE_RATE);
+      this.recognizer.setWords(false);
+      this.recognizer.on("partial", (m: any) => this.onPartial(m?.result?.partial ?? ""));
+      this.recognizer.on("result", (m: any) => this.onFinal(m?.result?.text ?? ""));
 
-    rec.onerror = (e) => {
-      if (e.error === "no-speech" || e.error === "aborted") return; // benign
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-        this.wantListening = false;
-        new Notice("GimmeVocal: microphone permission denied.");
-      } else {
-        if (e.error === "network") this.wantListening = false; // don't loop forever
-        new Notice(`GimmeVocal: error — ${e.error}`);
-      }
-    };
+      const AudioCtor: typeof AudioContext =
+        (window as any).AudioContext || (window as any).webkitAudioContext;
+      this.audioCtx = new AudioCtor();
+      this.source = this.audioCtx.createMediaStreamSource(this.mediaStream);
+      this.processor = this.audioCtx.createScriptProcessor(4096, 1, 1);
+      this.processor.onaudioprocess = (e: AudioProcessingEvent) => {
+        try { this.recognizer?.acceptWaveform(e.inputBuffer); } catch { /* ignore */ }
+        e.outputBuffer.getChannelData(0).fill(0); // mute → no echo
+      };
+      this.source.connect(this.processor);
+      this.processor.connect(this.audioCtx.destination);
 
-    rec.onend = () => {
-      this.isListening = false;
-      this.interimFrom = this.interimTo = null; // keep whatever preview is shown
-      if (this.wantListening) {
-        try { rec.start(); this.isListening = true; }
-        catch { this.wantListening = false; this.setActive(false); }
-      } else {
-        this.setActive(false);
-      }
-    };
+      const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor ?? null;
+      this.anchor = editor ? editor.getCursor() : null;
+      this.interimEnd = null;
 
-    try {
-      this.recognition = rec;
-      this.wantListening = true;
-      this.interimFrom = this.interimTo = null;
-      rec.start();
       this.isListening = true;
       this.setActive(true);
       new Notice("GimmeVocal: dictation started 🎙️");
-    } catch {
-      this.wantListening = false;
-      this.recognition = null;
-      new Notice("GimmeVocal: could not start dictation.");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      new Notice(`GimmeVocal: couldn't start — ${msg}`);
+      this.teardownAudio();
+      this.isListening = false;
+      this.setActive(false);
+    } finally {
+      this.busy = false;
     }
   }
 
-  /** Live preview + commit-at-cursor on every recognition event. */
-  private handleResult(e: SREvent): void {
-    const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
-    if (!editor) { this.interimFrom = this.interimTo = null; return; }
+  private getEditor() {
+    return this.app.workspace.getActiveViewOfType(MarkdownView)?.editor ?? null;
+  }
 
-    // 1. Erase the previously shown interim preview, if any.
-    let at: EditorPosition;
-    if (this.interimFrom && this.interimTo) {
-      editor.replaceRange("", this.interimFrom, this.interimTo);
-      at = this.interimFrom;
+  /** Live preview — replace the interim span with the current hypothesis. */
+  private onPartial(text: string): void {
+    const editor = this.getEditor();
+    if (!editor || !this.anchor) return;
+    const preview = text.replace(/\s+/g, " ").trim();
+    if (this.interimEnd) editor.replaceRange(preview, this.anchor, this.interimEnd);
+    else editor.replaceRange(preview, this.anchor);
+    this.interimEnd = preview ? advance(this.anchor, preview) : null;
+    if (this.interimEnd) editor.setCursor(this.interimEnd);
+  }
+
+  /** Finalized utterance — commit at the cursor with a trailing space. */
+  private onFinal(text: string): void {
+    const editor = this.getEditor();
+    if (!editor || !this.anchor) return;
+    const finalText = text.replace(/\s+/g, " ").trim();
+    const from = this.anchor;
+    const to = this.interimEnd ?? this.anchor;
+    if (finalText) {
+      const out = finalText + " ";
+      editor.replaceRange(out, from, to);
+      this.anchor = advance(from, out);
     } else {
-      at = editor.getCursor();
+      if (this.interimEnd) editor.replaceRange("", from, to);
+      this.anchor = from;
     }
-
-    // 2. Split this batch into finalized vs interim transcripts.
-    let finalChunk = "";
-    let interimChunk = "";
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const r = e.results[i];
-      const txt = r[0]?.transcript ?? "";
-      if (r.isFinal) finalChunk += txt;
-      else interimChunk += txt;
-    }
-
-    // 3. Commit finalized text (persisted, trailing space) exactly at the cursor.
-    if (finalChunk.trim()) {
-      const finalText = finalChunk.replace(/\s+/g, " ").trim() + " ";
-      editor.replaceRange(finalText, at);
-      at = advance(at, finalText);
-    }
-
-    // 4. Re-render the current interim preview right after the committed text.
-    const interim = interimChunk.replace(/\s+/g, " ").trimStart();
-    if (interim) {
-      editor.replaceRange(interim, at);
-      this.interimFrom = at;
-      this.interimTo = advance(at, interim);
-      editor.setCursor(this.interimTo);
-    } else {
-      this.interimFrom = this.interimTo = null;
-      editor.setCursor(at);
-    }
+    this.interimEnd = null;
+    editor.setCursor(this.anchor);
   }
 
   private stop(message: string): void {
-    this.wantListening = false;
-    this.interimFrom = this.interimTo = null; // leave preview text in the note
-    if (this.recognition) {
-      try { this.recognition.stop(); } catch { /* ignore */ }
-    }
+    this.teardownAudio();
+    if (this.recognizer) { try { this.recognizer.retrieveFinalResult?.(); } catch { /* ignore */ } }
+    this.interimEnd = null;
+    this.anchor = null;
     this.isListening = false;
     this.setActive(false);
     new Notice(message);
   }
 
-  private teardown(): void {
-    this.wantListening = false;
-    this.interimFrom = this.interimTo = null;
-    if (this.recognition) {
-      try {
-        this.recognition.onend = null; // stop auto-restart during teardown
-        this.recognition.onresult = null;
-        this.recognition.abort(); // fully releases the microphone
-      } catch { /* ignore */ }
-    }
-    this.recognition = null;
-    this.isListening = false;
-    this.setActive(false);
+  private teardownAudio(): void {
+    if (this.processor) { try { this.processor.disconnect(); this.processor.onaudioprocess = null; } catch { /* ignore */ } this.processor = null; }
+    if (this.source) { try { this.source.disconnect(); } catch { /* ignore */ } this.source = null; }
+    if (this.audioCtx) { try { void this.audioCtx.close(); } catch { /* ignore */ } this.audioCtx = null; }
+    if (this.mediaStream) { try { this.mediaStream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ } this.mediaStream = null; }
   }
 
   private setActive(active: boolean): void {
@@ -222,5 +230,43 @@ export default class GimmeVocalPlugin extends Plugin {
       this.statusEl.remove();
       this.statusEl = null;
     }
+  }
+}
+
+class GimmeVocalSettingTab extends PluginSettingTab {
+  constructor(app: App, private plugin: GimmeVocalPlugin) {
+    super(app, plugin);
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+    containerEl.createEl("h3", { text: "GimmeVocal" });
+
+    new Setting(containerEl)
+      .setName("Voice model URL")
+      .setDesc(
+        "The .tar.gz Vosk model to download on first use. Default is the small English model (fast, ~40 MB, lower accuracy). " +
+        "For better accuracy, paste a larger model URL (e.g. vosk-model-en-us-0.22-lgraph), then use “Clear downloaded model” below and restart dictation."
+      )
+      .addText((t) =>
+        t
+          .setPlaceholder(SMALL_MODEL_URL)
+          .setValue(this.plugin.settings.modelUrl)
+          .onChange(async (v) => {
+            this.plugin.settings.modelUrl = v.trim() || SMALL_MODEL_URL;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Clear downloaded model")
+      .setDesc("Deletes the cached model so the URL above is re-downloaded next time you start dictation.")
+      .addButton((b) =>
+        b.setButtonText("Clear & re-download").setWarning().onClick(async () => {
+          await this.plugin.clearCachedModel();
+          new Notice("GimmeVocal: cached model cleared. It will download again on next start.");
+        })
+      );
   }
 }
